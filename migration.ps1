@@ -1,10 +1,38 @@
 <# =========================
-  ENVIRONMENT CHECKS
+  CONFIG
 ========================= #>
 
-# Azure CLI login (interactive, only if not already logged in)
 $tenantId = "4181f65e-1111-440f-a4ff-531a548d36c8"
 $subscriptionId = "c2fe7be1-7723-4646-84d6-9a33f7a4806c"
+
+$resourceGroup = "rg-dbimport-tst"
+$location = "ukwest"
+
+# Source .BAK file in storage
+$bakStorageAccountName = "stdbexportfile"
+$bakContainerName = "backups"
+$bakFileName = "TestBigDB.bak"
+
+# Managed Instance for import/export
+$managedInstanceName = "sql-bakimport-tst"
+$tempDbName = "TestBigDB-Temp"
+$miAdmin = "your-mi-admin-username"
+$miPassword = "your-mi-admin-password"
+
+# Target (Azure SQL Server)
+$targetServerName = "sqlserver-target-tst"
+$targetDbName = "TestBigDB-Imported"
+$targetAdmin = "your-target-admin-username"
+$targetPassword = "your-target-admin-password"
+
+# Storage Account for BACPAC
+$storageAccountName = "stdbexportfile"
+$containerName = "bacpacs"
+$bacpacFileName = "TestBigDB-export.bacpac"
+
+<# =========================
+  ENVIRONMENT CHECKS
+========================= #>
 
 # Get correct temp directory for current platform
 if ($IsLinux -or $IsMacOS) {
@@ -44,38 +72,9 @@ $resources = az resource list --resource-group $resourceGroup --output table
 Write-Host $resources
 
 <# =========================
-  CONFIG
-========================= #>
-$resourceGroup = "rg-dbimport-tst"
-$location = "ukwest"
-
-# Source .BAK file in storage
-$bakStorageAccountName = "stdbexportfile"
-$bakContainerName = "backups"
-$bakFileName = "TestBigDB.bak"
-
-# Managed Instance for import/export
-$managedInstanceName = "sql-bakimport-tst"
-$tempDbName = "TestBigDB-Temp"
-$miAdmin = "your-mi-admin-username"
-$miPassword = "your-mi-admin-password"
-
-# Target (Azure SQL Server)
-$targetServerName = "sqlserver-target-tst"
-$targetDbName = "TestBigDB-Imported"
-$targetAdmin = "your-target-admin-username"
-$targetPassword = "your-target-admin-password"
-
-# Storage Account for BACPAC
-$storageAccountName = "stdbexportfile"
-$containerName = "bacpacs"
-$bacpacFileName = "TestBigDB-export.bacpac"
-
-# Add your database migration logic here...
-
-<# =========================
   SQLPACKAGE CHECK & INSTALLATION
 ========================= #>
+
 # Check if SqlPackage is already available in PATH
 $sqlPackageExists = Get-Command sqlpackage -ErrorAction SilentlyContinue
 if ($sqlPackageExists) {
