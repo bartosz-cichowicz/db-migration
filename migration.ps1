@@ -1,34 +1,61 @@
 <# =========================
-  CONFIG
+  CONFIG LOADING
 ========================= #>
 
-$tenantId = "4181f65e-1111-440f-a4ff-531a548d36c8"
-$subscriptionId = "c2fe7be1-7723-4646-84d6-9a33f7a4806c"
+# Function to load configuration from properties file
+function Load-Config {
+    param([string]$configPath)
+    
+    $config = @{}
+    if (Test-Path $configPath) {
+        Write-Host "Loading configuration from: $configPath"
+        Get-Content $configPath | ForEach-Object {
+            $line = $_.Trim()
+            if ($line -and !$line.StartsWith('#')) {
+                $key, $value = $line -split '=', 2
+                if ($key -and $value) {
+                    $config[$key.Trim()] = $value.Trim()
+                }
+            }
+        }
+    } else {
+        Write-Error "Configuration file not found: $configPath"
+        exit 1
+    }
+    return $config
+}
 
-$resourceGroup = "rg-dbimport-tst"
-$location = "ukwest"
+# Load configuration
+$configPath = Join-Path $PSScriptRoot "config.properties"
+$config = Load-Config -configPath $configPath
+
+# Assign configuration values to variables
+$tenantId = $config.tenantId
+$subscriptionId = $config.subscriptionId
+$resourceGroup = $config.resourceGroup
+$location = $config.location
 
 # Source .BAK file in storage
-$bakStorageAccountName = "stdbexportfile"
-$bakContainerName = "backups"
-$bakFileName = "TestBigDB.bak"
+$bakStorageAccountName = $config.bakStorageAccountName
+$bakContainerName = $config.bakContainerName
+$bakFileName = $config.bakFileName
 
 # Managed Instance for import/export
-$managedInstanceName = "sql-bakimport-tst"
-$tempDbName = "TestBigDB-Temp"
-$miAdmin = "your-mi-admin-username"
-$miPassword = "your-mi-admin-password"
+$managedInstanceName = $config.managedInstanceName
+$tempDbName = $config.tempDbName
+$miAdmin = $config.miAdmin
+$miPassword = $config.miPassword
 
 # Target (Azure SQL Server)
-$targetServerName = "sqlserver-target-tst"
-$targetDbName = "TestBigDB-Imported"
-$targetAdmin = "your-target-admin-username"
-$targetPassword = "your-target-admin-password"
+$targetServerName = $config.targetServerName
+$targetDbName = $config.targetDbName
+$targetAdmin = $config.targetAdmin
+$targetPassword = $config.targetPassword
 
 # Storage Account for BACPAC
-$storageAccountName = "stdbexportfile"
-$containerName = "bacpacs"
-$bacpacFileName = "TestBigDB-export.bacpac"
+$storageAccountName = $config.storageAccountName
+$containerName = $config.containerName
+$bacpacFileName = $config.bacpacFileName
 
 <# =========================
   ENVIRONMENT CHECKS
@@ -68,7 +95,10 @@ az account set --subscription $subscriptionId
 # Confirm login by listing resources in the resource group
 $resourceGroup = "rg-dbimport-tst"
 Write-Host "Confirming Azure login and subscription by listing resources in $resourceGroup..."
-$resources = az resource list --resource-group $resourceGroup --output table
+    $resourcesManaged = az resource list --resource-group $resourceGroup --resource-type "Microsoft.Sql/managedInstances" --output table
+    $resourcesServers = az resource list --resource-group $resourceGroup --resource-type "Microsoft.Sql/servers" --output table
+    Write-Host $resourcesManaged
+    Write-Host $resourcesServers
 Write-Host $resources
 
 <# =========================
@@ -82,7 +112,6 @@ if ($sqlPackageExists) {
     $SqlPackageExe = $sqlPackageExists.Source
 } else {
     Write-Host "SqlPackage not found in PATH. Checking local installation..."
-    
     # Check local temp installation
     $SqlPackageDir = Join-Path $TempDir "SqlPackage"
     $SqlPackageExe = if ($IsLinux -or $IsMacOS) { 
@@ -90,7 +119,6 @@ if ($sqlPackageExists) {
     } else { 
         Join-Path $SqlPackageDir "sqlpackage.exe" 
     }
-    
     if (Test-Path $SqlPackageExe) {
         Write-Host "SqlPackage found in temp directory: $SqlPackageExe"
     } else {
@@ -138,6 +166,12 @@ $env:PATH = "$($env:SQLPACKAGEPATH);$($env:PATH)"
 $sqlPackageVersion = & $SqlPackageExe /version
 Write-Host "SqlPackage version $sqlPackageVersion installed."
 
+if (-not (Get-Module -ListAvailable -Name SqlServer)) {
+    Write-Host "Installing SqlServer PowerShell module..."
+    Install-Module -Name SqlServer -Force -Scope CurrentUser
+}
+Import-Module SqlServer
+
 <# =========================
   STEP 1: IMPORT .BAK TO MANAGED INSTANCE
 ========================= #>
@@ -150,29 +184,55 @@ $storageKey = az storage account keys list --resource-group $resourceGroup --acc
 $bakStorageUri = "https://$bakStorageAccountName.blob.core.windows.net/$bakContainerName/$bakFileName"
 
 try {
-    Write-Host "Starting BAK import to Managed Instance: $managedInstanceName"
+    Write-Host "Starting BAK import to Managed Instance: $managedInstanceName via T-SQL RESTORE DATABASE"
     Write-Host "Source BAK: $bakStorageUri"
     Write-Host "Target Database: $tempDbName"
+    # Build T-SQL RESTORE DATABASE command for Azure SQL Managed Instance
+    $restoreQuery = @"
+RESTORE DATABASE [$tempDbName]
+FROM URL = '$bakStorageUri'
+"@
+    # Connect to the managed instance using its fully qualified domain name
+    $miServerInstance = "sql-bakimport-tst.public.91d4a0fcc021.database.windows.net,3342"
+    Write-Host "Connecting to: $miServerInstance"
     
-    # Start the restore operation
-    $restoreResult = az sql midb restore `
-        --resource-group $resourceGroup `
-        --managed-instance $managedInstanceName `
-        --name $tempDbName `
-        --backup-storage-redundancy Local `
-        --source-url $bakStorageUri `
-        --admin-user $miAdmin `
-        --admin-password $miPassword `
-        --output json
-
-    # Check restore status
-    $restoreStatus = $restoreResult.provisioningState
-    if ($restoreStatus -ne "Succeeded") {
-        throw "BAK import failed with status: $restoreStatus"
+    # Test connection with 1 minute timeout
+    Write-Host "Testing connection to managed instance..."
+    $connectionTest = $null
+    $timeout = 60 # 1 minute
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    
+    do {
+        try {
+            $connectionTest = Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query "SELECT 1" -ConnectionTimeout 10 -QueryTimeout 10 -ErrorAction Stop
+            Write-Host "Connection successful!"
+            break
+        } catch {
+            Write-Host "Connection attempt failed, retrying..."
+            Start-Sleep -Seconds 5
+        }
+    } while ($stopwatch.Elapsed.TotalSeconds -lt $timeout)
+    
+    $stopwatch.Stop()
+    
+    if (-not $connectionTest) {
+        throw "Connection to $miServerInstance failed after 1 minute. Please check: 1) Public endpoint is enabled, 2) Firewall allows your IP, 3) Connection string is correct, 4) Credentials are valid"
     }
     
-    Write-Host "BAK import completed successfully to Managed Instance: $managedInstanceName"
+    # Check if database exists and drop it if it does
+    $checkDbQuery = "SELECT COUNT(*) as DbCount FROM sys.databases WHERE name = '$tempDbName'"
+    $dbExists = Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $checkDbQuery -ConnectionTimeout 30 -QueryTimeout 30
     
+    if ($dbExists.DbCount -gt 0) {
+        Write-Host "Database '$tempDbName' already exists. Dropping it first..."
+        $dropDbQuery = "DROP DATABASE [$tempDbName]"
+        Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $dropDbQuery -ConnectionTimeout 30 -QueryTimeout 30
+        Write-Host "Database '$tempDbName' dropped successfully."
+    }
+    
+    Write-Host "Starting RESTORE DATABASE operation..."
+    Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $restoreQuery -ConnectionTimeout 300 -QueryTimeout 3600
+    Write-Host "BAK import completed successfully to Managed Instance: $managedInstanceName"
 } catch {
     Write-Error "BAK import failed: $($_.Exception.Message)"
     exit 1
@@ -189,10 +249,10 @@ $localBacpacPath = Join-Path $TempDir $bacpacFileName
 # SqlPackage export arguments
 $exportArgs = @(
     "/Action:Export"
-    "/SourceServerName:$sourceMiName.public.c2fe7be1-7723-4646-84d6-9a33f7a4806c.database.windows.net,3342"
-    "/SourceDatabaseName:$sourceDbName"
-    "/SourceUser:$sourceMiAdmin"
-    "/SourcePassword:$sourceMiPassword"
+    "/SourceServerName:$miServerInstance"
+    "/SourceDatabaseName:$tempDbName"
+    "/SourceUser:$miAdmin"
+    "/SourcePassword:$miPassword"
     "/TargetFile:$localBacpacPath"
     "/SourceEncryptConnection:True"
     "/SourceTrustServerCertificate:False"
@@ -317,8 +377,8 @@ if (Test-Path $downloadBacpacPath) {
 }
 
 # Optionally remove BACPAC from storage (uncomment if desired)
-# az storage blob delete --account-name $storageAccountName --account-key $storageKey --container-name $containerName --name $bacpacFileName
-# Write-Host "Removed BACPAC from storage"
+az storage blob delete --account-name $storageAccountName --account-key $storageKey --container-name $containerName --name $bacpacFileName
+Write-Host "Removed BACPAC from storage"
 
 Write-Host "Migration completed successfully!"
 Write-Host "Source: $sourceMiName/$sourceDbName (Managed Instance)"
