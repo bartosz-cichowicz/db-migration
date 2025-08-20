@@ -376,7 +376,7 @@ if (Test-Path $downloadBacpacPath) {
     Write-Host "Removed local download file: $downloadBacpacPath"
 }
 
-# Optionally remove BACPAC from storage (uncomment if desired)
+# Optionally remove BACPAC from storage
 az storage blob delete --account-name $storageAccountName --account-key $storageKey --container-name $containerName --name $bacpacFileName
 Write-Host "Removed BACPAC from storage"
 
