@@ -37,32 +37,37 @@ Copy `config.properties.example` to `config.properties` and update the values:
 
 ```properties
 # Azure Configuration
-tenantId=your-tenant-id
-subscriptionId=your-subscription-id
-resourceGroup=your-resource-group
+tenantId=your-tenant-id-here
+subscriptionId=your-subscription-id-here
+resourceGroup=your-resource-group-name
 location=your-azure-region
 
 # Source .BAK file in storage
-bakStorageAccountName=your-storage-account
+bakStorageAccountName=your-storage-account-name
 bakContainerName=your-container-name
-bakFileName=your-database.bak
+bakFileName=your-database-backup.bak
 
-# Managed Instance for import/export
-managedInstanceName=your-managed-instance
-tempDbName=TempDatabase
-miAdmin=your-mi-admin-user
-miPassword=your-mi-password
+# Managed Instance for import/export (intermediate step)
+managedInstanceName=your-managed-instance-name
+tempDbName=TempMigrationDatabase
+miAdmin=your-managed-instance-admin-user
+miPassword=your-managed-instance-password
 
-# Target (Azure SQL Server)
-targetServerName=your-sql-server
-targetDbName=YourTargetDatabase
-targetAdmin=your-sql-admin-user
-targetPassword=your-sql-password
+# Target Azure SQL Server (final destination)
+targetServerName=your-target-sql-server-name
+targetDbName=your-target-database-name
+targetAdmin=your-sql-server-admin-user
+targetPassword=your-sql-server-password
+# Database service tier and size (optional - defaults will be used if not specified)
+# For 250GB database, use Premium P6 (recommended) or P11 for higher performance
+targetEdition=Premium
+targetServiceObjective=P6
+targetMaxSize=250
 
-# Storage Account for BACPAC
-storageAccountName=your-storage-account
+# Storage Account for BACPAC export
+storageAccountName=your-storage-account-name
 containerName=your-container-name
-bacpacFileName=your-export.bacpac
+bacpacFileName=your-export-filename.bacpac
 ```
 
 ### 2. Configuration Properties Description

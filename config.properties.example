@@ -25,8 +25,8 @@ targetDbName=your-target-database-name
 targetAdmin=your-sql-server-admin-user
 targetPassword=your-sql-server-password
 # Database service tier and size (optional - defaults will be used if not specified)
-# For 250GB database, use Standard S6 or Premium P6/P11
-targetEdition=Standard
+# For 250GB database, use Premium P6 (recommended) or P11 for higher performance
+targetEdition=Premium
 targetServiceObjective=P6
 targetMaxSize=250
 
