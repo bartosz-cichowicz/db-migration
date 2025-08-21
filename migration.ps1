@@ -2,6 +2,39 @@
   CONFIG LOADING
 ========================= #>
 
+# Start overall process timer
+$overallStartTime = Get-Date
+Write-Host "=== Azure Database Migration Started at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===" -ForegroundColor Green
+
+# Function to format time elapsed
+function Format-TimeElapsed {
+    param([DateTime]$startTime, [DateTime]$endTime)
+    $elapsed = $endTime - $startTime
+    if ($elapsed.TotalHours -ge 1) {
+        return "{0:hh\:mm\:ss}" -f $elapsed
+    } else {
+        return "{0:mm\:ss}" -f $elapsed
+    }
+}
+
+# Function to log step completion with timing
+function Write-StepComplete {
+    param([string]$stepName, [DateTime]$stepStartTime)
+    $stepEndTime = Get-Date
+    $stepDuration = Format-TimeElapsed -startTime $stepStartTime -endTime $stepEndTime
+    Write-Host "[OK] $stepName completed in $stepDuration" -ForegroundColor Green
+    
+    # Store step duration for logging
+    $global:stepDurations += @{
+        StepName = $stepName
+        Duration = $stepDuration
+        StartTime = $stepStartTime
+        EndTime = $stepEndTime
+    }
+    
+    return $stepEndTime
+}
+
 # Function to load configuration from properties file
 function Load-Config {
     param([string]$configPath)
@@ -28,6 +61,9 @@ function Load-Config {
 # Load configuration
 $configPath = Join-Path $PSScriptRoot "config.properties"
 $config = Load-Config -configPath $configPath
+
+# Initialize step duration tracking
+$global:stepDurations = @()
 
 # Assign configuration values to variables
 $tenantId = $config.tenantId
@@ -91,15 +127,6 @@ if (-not $currentAccount) {
 
 # Set subscription
 az account set --subscription $subscriptionId
-
-# Confirm login by listing resources in the resource group
-$resourceGroup = "rg-dbimport-tst"
-Write-Host "Confirming Azure login and subscription by listing resources in $resourceGroup..."
-    $resourcesManaged = az resource list --resource-group $resourceGroup --resource-type "Microsoft.Sql/managedInstances" --output table
-    $resourcesServers = az resource list --resource-group $resourceGroup --resource-type "Microsoft.Sql/servers" --output table
-    Write-Host $resourcesManaged
-    Write-Host $resourcesServers
-Write-Host $resources
 
 <# =========================
   SQLPACKAGE CHECK & INSTALLATION
@@ -175,7 +202,8 @@ Import-Module SqlServer
 <# =========================
   STEP 1: IMPORT .BAK TO MANAGED INSTANCE
 ========================= #>
-Write-Host "Importing .BAK file to Managed Instance..."
+$step1StartTime = Get-Date
+Write-Host "=== STEP 1: Importing .BAK file to Managed Instance ===" -ForegroundColor Cyan
 
 # Get storage account key
 $storageKey = az storage account keys list --resource-group $resourceGroup --account-name $bakStorageAccountName --query "[0].value" --output tsv
@@ -233,6 +261,7 @@ FROM URL = '$bakStorageUri'
     Write-Host "Starting RESTORE DATABASE operation..."
     Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $restoreQuery -ConnectionTimeout 300 -QueryTimeout 3600
     Write-Host "BAK import completed successfully to Managed Instance: $managedInstanceName"
+    Write-StepComplete -stepName "STEP 1: BAK Import to Managed Instance" -stepStartTime $step1StartTime
 } catch {
     Write-Error "BAK import failed: $($_.Exception.Message)"
     exit 1
@@ -241,7 +270,8 @@ FROM URL = '$bakStorageUri'
 <# =========================
   STEP 2: EXPORT FROM MANAGED INSTANCE
 ========================= #>
-Write-Host "Exporting database from Managed Instance using SqlPackage..."
+$step2StartTime = Get-Date
+Write-Host "=== STEP 2: Exporting database from Managed Instance using SqlPackage ===" -ForegroundColor Cyan
 
 # Local BACPAC path
 $localBacpacPath = Join-Path $TempDir $bacpacFileName
@@ -277,6 +307,7 @@ try {
     
     $fileSize = (Get-Item $localBacpacPath).Length
     Write-Host "BACPAC file size: $([math]::Round($fileSize / 1MB, 2)) MB"
+    Write-StepComplete -stepName "STEP 2: Export to BACPAC" -stepStartTime $step2StartTime
     
 } catch {
     Write-Error "Export failed: $($_.Exception.Message)"
@@ -286,7 +317,8 @@ try {
 <# =========================
   STEP 3: UPLOAD BACPAC TO STORAGE
 ========================= #>
-Write-Host "Uploading BACPAC to Azure Storage..."
+$step3StartTime = Get-Date
+Write-Host "=== STEP 3: Uploading BACPAC to Azure Storage ===" -ForegroundColor Cyan
 
 try {
     # Upload BACPAC to storage account
@@ -303,6 +335,7 @@ try {
     }
     
     Write-Host "BACPAC uploaded successfully to storage account"
+    Write-StepComplete -stepName "STEP 3: Upload BACPAC to Storage" -stepStartTime $step3StartTime
     
 } catch {
     Write-Error "Upload failed: $($_.Exception.Message)"
@@ -312,7 +345,8 @@ try {
 <# =========================
   STEP 4: IMPORT TO AZURE SQL SERVER
 ========================= #>
-Write-Host "Importing BACPAC to Azure SQL Server using SqlPackage..."
+$step4StartTime = Get-Date
+Write-Host "=== STEP 4: Importing BACPAC to Azure SQL Server using SqlPackage ===" -ForegroundColor Cyan
 
 # Download BACPAC from storage for import
 $downloadBacpacPath = Join-Path $TempDir "download_$bacpacFileName"
@@ -344,6 +378,20 @@ try {
         "/TargetTrustServerCertificate:False"
     )
     
+    # Add database size and service tier parameters if specified
+    if ($config.ContainsKey('targetEdition') -and $config['targetEdition']) {
+        $importArgs += "/p:DatabaseEdition=$($config['targetEdition'])"
+    }
+    if ($config.ContainsKey('targetServiceObjective') -and $config['targetServiceObjective']) {
+        $importArgs += "/p:DatabaseServiceObjective=$($config['targetServiceObjective'])"
+    }
+    if ($config.ContainsKey('targetMaxSize') -and $config['targetMaxSize']) {
+        # SqlPackage expects size with proper unit specification
+        # For 250GB, we need to specify "250GB" not the MB equivalent
+        $maxSizeValue = "$($config['targetMaxSize'])"
+        $importArgs += "/p:DatabaseMaximumSize=$maxSizeValue"
+    }
+    
     Write-Host "Import command: $SqlPackageExe $($importArgs -join ' ')"
     
     # Execute import
@@ -354,6 +402,7 @@ try {
     }
     
     Write-Host "Database imported successfully to: $targetServerName/$targetDbName"
+    Write-StepComplete -stepName "STEP 4: Import to Azure SQL Database" -stepStartTime $step4StartTime
     
 } catch {
     Write-Error "Import failed: $($_.Exception.Message)"
@@ -380,7 +429,84 @@ if (Test-Path $downloadBacpacPath) {
 az storage blob delete --account-name $storageAccountName --account-key $storageKey --container-name $containerName --name $bacpacFileName
 Write-Host "Removed BACPAC from storage"
 
-Write-Host "Migration completed successfully!"
-Write-Host "Source: $sourceMiName/$sourceDbName (Managed Instance)"
-Write-Host "Target: $targetServerName/$targetDbName (Azure SQL Server)"
-Write-Host "BACPAC stored at: https://$storageAccountName.blob.core.windows.net/$containerName/$bacpacFileName"
+# Calculate and display overall migration time
+$overallEndTime = Get-Date
+$totalDuration = Format-TimeElapsed -startTime $overallStartTime -endTime $overallEndTime
+
+# Create log file with migration summary
+$logFileName = "migration-log-$(Get-Date -Format 'yyyyMMdd-HHmmss').txt"
+$logFilePath = Join-Path $PSScriptRoot $logFileName
+
+$logContent = @"
+========================================
+    MIGRATION COMPLETED SUCCESSFULLY!
+========================================
+
+MIGRATION SUMMARY:
+   - Total Duration: $totalDuration
+   - Started: $(Get-Date $overallStartTime -Format 'yyyy-MM-dd HH:mm:ss')
+   - Completed: $(Get-Date $overallEndTime -Format 'yyyy-MM-dd HH:mm:ss')
+
+STEP DURATIONS:
+$(($global:stepDurations | ForEach-Object { "   - $($_.StepName): $($_.Duration)" }) -join "`n")
+
+MIGRATION DETAILS:
+   - Source: .BAK file -> Azure SQL Managed Instance
+   - Target: $targetServerName/$targetDbName (Azure SQL Database)
+   - Temp Database: $managedInstanceName/$tempDbName
+   - BACPAC Location: https://$storageAccountName.blob.core.windows.net/$containerName/$bacpacFileName
+   - Log File Location: https://$bakStorageAccountName.blob.core.windows.net/$bakContainerName/$logFileName
+
+CONFIGURATION USED:
+   - Tenant ID: $tenantId
+   - Subscription ID: $subscriptionId
+   - Resource Group: $resourceGroup
+   - BAK Storage Account: $bakStorageAccountName
+   - BAK Container: $bakContainerName
+   - BAK File: $bakFileName
+   - Managed Instance: $managedInstanceName
+   - Target SQL Server: $targetServerName
+
+PROCESS COMPLETED AT: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+"@
+
+# Write log to file
+$logContent | Out-File -FilePath $logFilePath -Encoding UTF8
+Write-Host "Migration log saved to: $logFilePath" -ForegroundColor Yellow
+
+# Upload log file to Azure Storage
+try {
+    Write-Host "Uploading migration log to Azure Storage..." -ForegroundColor Cyan
+    az storage blob upload `
+        --account-name $bakStorageAccountName `
+        --account-key $storageKey `
+        --container-name $bakContainerName `
+        --name $logFileName `
+        --file $logFilePath `
+        --overwrite
+    
+    if ($LASTEXITCODE -eq 0) {
+        $logStorageUrl = "https://$bakStorageAccountName.blob.core.windows.net/$bakContainerName/$logFileName"
+        Write-Host "Migration log uploaded to: $logStorageUrl" -ForegroundColor Green
+    } else {
+        Write-Host "Warning: Failed to upload log file to storage" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "Warning: Could not upload log file to storage: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "    MIGRATION COMPLETED SUCCESSFULLY!" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+Write-Host ""
+Write-Host ">> MIGRATION SUMMARY:" -ForegroundColor Cyan
+Write-Host "   - Total Duration: $totalDuration" -ForegroundColor White
+Write-Host "   - Started: $(Get-Date $overallStartTime -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
+Write-Host "   - Completed: $(Get-Date $overallEndTime -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
+Write-Host ""
+Write-Host ">> MIGRATION DETAILS:" -ForegroundColor Cyan
+Write-Host "   - Source: .BAK file -> Azure SQL Managed Instance" -ForegroundColor White
+Write-Host "   - Target: $targetServerName/$targetDbName (Azure SQL Database)" -ForegroundColor White
+Write-Host "   - Temp Database: $managedInstanceName/$tempDbName" -ForegroundColor White
+Write-Host "   - BACPAC Location: https://$storageAccountName.blob.core.windows.net/$containerName/$bacpacFileName" -ForegroundColor White

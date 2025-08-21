@@ -84,6 +84,9 @@ bacpacFileName=your-export.bacpac
 | `targetDbName` | Final database name | `MyProductionDatabase` |
 | `targetAdmin` | SQL Server admin username | `sqladmin` |
 | `targetPassword` | SQL Server admin password | `YourSecurePassword123!` |
+| `targetEdition` | Database edition (optional) | `Standard`, `Premium`, `Basic` |
+| `targetServiceObjective` | Performance level (optional) | `S6` (250GB), `P6`, `P11` |
+| `targetMaxSize` | Maximum database size in GB (optional) | `250`, `500`, `1000` |
 | `storageAccountName` | Storage account for BACPAC | `mystorageaccount` |
 | `containerName` | Container for BACPAC file | `exports` |
 | `bacpacFileName` | BACPAC export filename | `MyDatabase-export.bacpac` |
@@ -201,10 +204,13 @@ ERROR: Operation timed out
 ### Logging and Monitoring
 
 The script provides detailed logging output including:
+- **Step-by-step timing** - Duration for each migration step
+- **Overall process timing** - Total migration duration with start/end times
 - Connection status and progress
 - File sizes and transfer times
 - SQL operation results
 - Error details with troubleshooting hints
+- Comprehensive migration summary at completion
 
 ## Performance Considerations
 
@@ -218,6 +224,21 @@ The script provides detailed logging output including:
 - Ensure adequate bandwidth for large file transfers
 - Monitor Azure resource performance during migration
 - Consider off-peak hours for large migrations
+
+### Database Sizing Options
+The script supports configuring the target database size and performance tier:
+
+**Common configurations for 250GB databases:**
+- **Standard S6**: 250GB max, 80 DTUs - Cost-effective for moderate workloads
+- **Premium P6**: 500GB max, 800 DTUs - High performance for intensive workloads  
+- **Premium P11**: 1TB max, 1750 DTUs - Maximum performance
+
+**Size specification:**
+- `targetMaxSize=250` = 250GB
+- `targetMaxSize=500` = 500GB  
+- `targetMaxSize=1000` = 1TB (1000GB)
+
+If database size parameters are not specified, Azure SQL Database will use default sizing based on the imported data.
 
 ## Examples
 

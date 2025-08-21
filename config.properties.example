@@ -1,0 +1,36 @@
+# Azure Database Migration Configuration
+# Copy this file to 'config.properties' and update with your values
+# DO NOT commit config.properties to version control - it contains sensitive information
+
+# Azure Configuration
+tenantId=your-tenant-id-here
+subscriptionId=your-subscription-id-here
+resourceGroup=your-resource-group-name
+location=your-azure-region
+
+# Source .BAK file in storage
+bakStorageAccountName=your-storage-account-name
+bakContainerName=your-container-name
+bakFileName=your-database-backup.bak
+
+# Managed Instance for import/export (intermediate step)
+managedInstanceName=your-managed-instance-name
+tempDbName=TempMigrationDatabase
+miAdmin=your-managed-instance-admin-user
+miPassword=your-managed-instance-password
+
+# Target Azure SQL Server (final destination)
+targetServerName=your-target-sql-server-name
+targetDbName=your-target-database-name
+targetAdmin=your-sql-server-admin-user
+targetPassword=your-sql-server-password
+# Database service tier and size (optional - defaults will be used if not specified)
+# For 250GB database, use Standard S6 or Premium P6/P11
+targetEdition=Standard
+targetServiceObjective=P6
+targetMaxSize=250
+
+# Storage Account for BACPAC export
+storageAccountName=your-storage-account-name
+containerName=your-container-name
+bacpacFileName=your-export-filename.bacpac
