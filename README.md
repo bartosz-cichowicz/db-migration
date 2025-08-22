@@ -95,6 +95,10 @@ bacpacFileName=your-export-filename.bacpac
 | `storageAccountName` | Storage account for BACPAC | `mystorageaccount` |
 | `containerName` | Container for BACPAC file | `exports` |
 | `bacpacFileName` | BACPAC export filename | `MyDatabase-export.bacpac` |
+| `connectionTimeout` | SQL connection timeout in seconds | `300` (5 minutes) |
+| `queryTimeoutShort` | Short query timeout in seconds | `30` (quick operations) |
+| `queryTimeoutMedium` | Medium query timeout in seconds | `1800` (30 minutes) |
+| `queryTimeoutLong` | Long query timeout in seconds | `3600` (1 hour) |
 
 ## Usage
 
@@ -244,6 +248,41 @@ The script supports configuring the target database size and performance tier:
 - `targetMaxSize=1000` = 1TB (1000GB)
 
 If database size parameters are not specified, Azure SQL Database will use default sizing based on the imported data.
+
+### Timeout Configuration Options
+The script supports configurable timeout values for different database operations:
+
+#### Standard Settings (Default)
+```properties
+connectionTimeout=300        # 5 minutes
+queryTimeoutShort=30        # 30 seconds  
+queryTimeoutMedium=1800     # 30 minutes
+queryTimeoutLong=3600       # 1 hour
+```
+
+#### Conservative Settings (Large Databases/Slow Networks)
+```properties
+connectionTimeout=600       # 10 minutes
+queryTimeoutShort=60       # 1 minute
+queryTimeoutMedium=3600    # 1 hour
+queryTimeoutLong=7200      # 2 hours
+```
+
+**Comparison with Standard Settings:**
+
+| **Timeout** | **Standard** | **Conservative** | **Difference** | **Use Case** |
+|-------------|--------------|------------------|----------------|--------------|
+| Connection | 5 min | **10 min** | +100% | Slow networks, high load |
+| Short Query | 30 sec | **1 min** | +100% | Server under load |
+| Medium Query | 30 min | **1 hour** | +100% | Very large DB drops |
+| Long Query | 1 hour | **2 hours** | +100% | Massive .BAK restores |
+
+**When to use Conservative Settings:**
+- Extra large databases (500GB+)
+- Production environments requiring high reliability
+- Cross-region migrations with network latency
+- Peak usage hours when Azure resources are under load
+- "Set it and forget it" migrations where reliability > speed
 
 ## Examples
 

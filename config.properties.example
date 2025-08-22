@@ -34,3 +34,9 @@ targetMaxSize=250
 storageAccountName=your-storage-account-name
 containerName=your-container-name
 bacpacFileName=your-export-filename.bacpac
+
+# Timeout Settings (in seconds) - adjust based on your database size and network conditions
+connectionTimeout=300
+queryTimeoutShort=30
+queryTimeoutMedium=1800
+queryTimeoutLong=3600

@@ -232,7 +232,7 @@ FROM URL = '$bakStorageUri'
     
     do {
         try {
-            $connectionTest = Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query "SELECT 1" -ConnectionTimeout 10 -QueryTimeout 10 -ErrorAction Stop
+            $connectionTest = Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query "SELECT 1" -ConnectionTimeout $config['connectionTimeout'] -QueryTimeout $config['queryTimeoutShort'] -ErrorAction Stop
             Write-Host "Connection successful!"
             break
         } catch {
@@ -249,17 +249,18 @@ FROM URL = '$bakStorageUri'
     
     # Check if database exists and drop it if it does
     $checkDbQuery = "SELECT COUNT(*) as DbCount FROM sys.databases WHERE name = '$tempDbName'"
-    $dbExists = Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $checkDbQuery -ConnectionTimeout 30 -QueryTimeout 30
+    $dbExists = Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $checkDbQuery -ConnectionTimeout $config['connectionTimeout'] -QueryTimeout $config['queryTimeoutShort']
     
     if ($dbExists.DbCount -gt 0) {
         Write-Host "Database '$tempDbName' already exists. Dropping it first..."
         $dropDbQuery = "DROP DATABASE [$tempDbName]"
-        Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $dropDbQuery -ConnectionTimeout 30 -QueryTimeout 30
+        # Use longer timeout for DROP DATABASE as it can take several minutes for large databases
+        Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $dropDbQuery -ConnectionTimeout $config['connectionTimeout'] -QueryTimeout $config['queryTimeoutMedium']
         Write-Host "Database '$tempDbName' dropped successfully."
     }
     
     Write-Host "Starting RESTORE DATABASE operation..."
-    Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $restoreQuery -ConnectionTimeout 300 -QueryTimeout 3600
+    Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $restoreQuery -ConnectionTimeout $config['connectionTimeout'] -QueryTimeout $config['queryTimeoutLong']
     Write-Host "BAK import completed successfully to Managed Instance: $managedInstanceName"
     Write-StepComplete -stepName "STEP 1: BAK Import to Managed Instance" -stepStartTime $step1StartTime
 } catch {
