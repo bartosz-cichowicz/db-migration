@@ -167,7 +167,20 @@ $step1StartTime = Get-Date
 Write-Host "=== STEP 1: Importing .BAK file to Managed Instance ===" -ForegroundColor Cyan
 
 # Get storage account key
+Write-Host "Retrieving storage account key for: $bakStorageAccountName"
 $storageKey = az storage account keys list --resource-group $resourceGroup --account-name $bakStorageAccountName --query "[0].value" --output tsv
+
+# Validate storage key was retrieved
+if (-not $storageKey -or $storageKey.Trim() -eq "") {
+    Write-Error "Failed to retrieve storage account key for '$bakStorageAccountName'. Please check:"
+    Write-Host "1. Storage account name is correct: $bakStorageAccountName" -ForegroundColor Yellow
+    Write-Host "2. Resource group is correct: $resourceGroup" -ForegroundColor Yellow
+    Write-Host "3. You have access to the storage account" -ForegroundColor Yellow
+    Write-Host "4. Azure CLI is properly authenticated" -ForegroundColor Yellow
+    exit 1
+}
+
+Write-Host "Storage account key retrieved successfully." -ForegroundColor Green
 
 # Get storage URI for .BAK file
 $bakStorageUri = "https://$bakStorageAccountName.blob.core.windows.net/$bakContainerName/$bakFileName"
@@ -283,6 +296,16 @@ $step3StartTime = Get-Date
 Write-Host "=== STEP 3: Uploading BACPAC to Azure Storage ===" -ForegroundColor Cyan
 
 try {
+    # Validate storage key before upload
+    if (-not $storageKey -or $storageKey.Trim() -eq "") {
+        throw "Storage account key is empty. Cannot proceed with upload."
+    }
+    
+    Write-Host "Using storage account: $storageAccountName"
+    Write-Host "Uploading to container: $containerName"
+    Write-Host "Target blob name: $bacpacFileName"
+    Write-Host "Source file: $localBacpacPath"
+    
     # Upload BACPAC to storage account
     az storage blob upload `
         --account-name $storageAccountName `
