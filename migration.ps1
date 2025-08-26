@@ -137,52 +137,6 @@ $sqlPackageExists = Get-Command sqlpackage -ErrorAction SilentlyContinue
 if ($sqlPackageExists) {
     Write-Host "SqlPackage found in PATH: $($sqlPackageExists.Source)"
     $SqlPackageExe = $sqlPackageExists.Source
-} else {
-    Write-Host "SqlPackage not found in PATH. Checking local installation..."
-    # Check local temp installation
-    $SqlPackageDir = Join-Path $TempDir "SqlPackage"
-    $SqlPackageExe = if ($IsLinux -or $IsMacOS) { 
-        Join-Path $SqlPackageDir "sqlpackage" 
-    } else { 
-        Join-Path $SqlPackageDir "sqlpackage.exe" 
-    }
-    if (Test-Path $SqlPackageExe) {
-        Write-Host "SqlPackage found in temp directory: $SqlPackageExe"
-    } else {
-        Write-Host "SqlPackage not found. Installing to temp directory..."
-        
-        # Get correct download URL for platform
-        if ($IsLinux) {
-            $url = "https://go.microsoft.com/fwlink/?linkid=2261798"  # Linux
-        } elseif ($IsMacOS) {
-            $url = "https://go.microsoft.com/fwlink/?linkid=2261799"  # macOS
-        } else {
-            $url = "https://go.microsoft.com/fwlink/?linkid=2261797"  # Windows
-        }
-        
-        $zip = Join-Path $TempDir "SqlPackage.zip"
-        
-        try {
-            # Create directory
-            New-Item -ItemType Directory -Path $SqlPackageDir -Force | Out-Null
-            
-            # Download and extract
-            Write-Host "Downloading SqlPackage..."
-            Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
-            Expand-Archive -Path $zip -DestinationPath $SqlPackageDir -Force
-            Remove-Item $zip -Force -ErrorAction SilentlyContinue
-            
-            # Set execute permissions on Linux/MacOS
-            if ($IsLinux -or $IsMacOS) {
-                chmod +x $SqlPackageExe
-            }
-            
-            Write-Host "SqlPackage installed successfully: $SqlPackageExe"
-        } catch {
-            Write-Host "Error installing SqlPackage: $_"
-            exit 1
-        }
-    }
 }
 
 # SqlPackage environment variables
@@ -193,11 +147,18 @@ $env:PATH = "$($env:SQLPACKAGEPATH);$($env:PATH)"
 $sqlPackageVersion = & $SqlPackageExe /version
 Write-Host "SqlPackage version $sqlPackageVersion installed."
 
-if (-not (Get-Module -ListAvailable -Name SqlServer)) {
-    Write-Host "Installing SqlServer PowerShell module..."
-    Install-Module -Name SqlServer -Force -Scope CurrentUser
+# Try to import SqlServer module with error handling
+try {
+    Import-Module SqlServer -ErrorAction Stop
+    Write-Host "SqlServer PowerShell module imported successfully." -ForegroundColor Green
+} catch {
+    Write-Host "ERROR: Failed to import SqlServer PowerShell module." -ForegroundColor Red
+    Write-Host "You need to install SqlPackage first with command:" -ForegroundColor Yellow
+    Write-Host "dotnet tool install -g microsoft.sqlpackage" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Error details: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
 }
-Import-Module SqlServer
 
 <# =========================
   STEP 1: IMPORT .BAK TO MANAGED INSTANCE
