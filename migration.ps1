@@ -296,6 +296,7 @@ $exportArgs = @(
     "/SourceTrustServerCertificate:False"
     # Skip/ignore orphaned users and related elements during export
     "/p:IgnoreUserLoginMappings=True"
+    "/p:ExcludeObjectTypes=Users,RoleMembership,Permissions"
 )
 
 Write-Host "Export command: $SqlPackageExe $($exportArgs -join ' ')"
