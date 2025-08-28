@@ -185,6 +185,40 @@ Write-Host "Storage account key retrieved successfully." -ForegroundColor Green
 # Get storage URI for .BAK file
 $bakStorageUri = "https://$bakStorageAccountName.blob.core.windows.net/$bakContainerName/$bakFileName"
 
+    # Define Managed Instance host early (used by credential ensure)
+    $miServerInstance = "sql-bakimport-tst.public.91d4a0fcc021.database.windows.net,3342"
+
+    # Ensure SAS-based credential exists for the container (rl permissions)
+    Write-Host "Ensuring SAS credential on Managed Instance for container access..." -ForegroundColor Cyan
+    $credentialName = "https://$bakStorageAccountName.blob.core.windows.net/$bakContainerName"
+    $sasExpiry = (Get-Date).AddHours(24).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $sasToken = az storage container generate-sas --account-name $bakStorageAccountName --account-key $storageKey --name $bakContainerName --permissions rl --expiry $sasExpiry --output tsv
+    if ($sasToken) {
+        Write-Host "SAS token generated." -ForegroundColor Gray
+        $dropCredQuery = @"
+IF EXISTS (SELECT 1 FROM sys.credentials WHERE name = '$credentialName')
+    DROP CREDENTIAL [$credentialName];
+"@
+        $createCredQuery = @"
+CREATE CREDENTIAL [$credentialName]
+WITH IDENTITY = 'SHARED ACCESS SIGNATURE',
+SECRET = '$sasToken'
+"@
+        try {
+            Write-Host "Dropping existing credential (if any)..." -ForegroundColor Gray
+            Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $dropCredQuery -ConnectionTimeout $config['connectionTimeout'] -QueryTimeout $config['queryTimeoutShort']
+        } catch {}
+        try {
+            Write-Host "Creating SAS credential..." -ForegroundColor Gray
+            Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $createCredQuery -ConnectionTimeout $config['connectionTimeout'] -QueryTimeout $config['queryTimeoutShort']
+            Write-Host "SAS credential ensured on Managed Instance." -ForegroundColor Green
+        } catch {
+            Write-Host "Warning: Could not create SAS credential: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "Warning: Could not generate SAS token; proceeding may fail with Access Denied." -ForegroundColor Yellow
+    }
+
 try {
     Write-Host "Starting BAK import to Managed Instance: $managedInstanceName via T-SQL RESTORE DATABASE"
     Write-Host "Source BAK: $bakStorageUri"
@@ -195,7 +229,6 @@ RESTORE DATABASE [$tempDbName]
 FROM URL = '$bakStorageUri'
 "@
     # Connect to the managed instance using its fully qualified domain name
-    $miServerInstance = "sql-bakimport-tst.public.91d4a0fcc021.database.windows.net,3342"
     Write-Host "Connecting to: $miServerInstance"
     
     # Test connection with 1 minute timeout
@@ -261,6 +294,8 @@ $exportArgs = @(
     "/TargetFile:$localBacpacPath"
     "/SourceEncryptConnection:True"
     "/SourceTrustServerCertificate:False"
+    # Skip/ignore orphaned users and related elements during export
+    "/p:IgnoreUserLoginMappings=True"
 )
 
 Write-Host "Export command: $SqlPackageExe $($exportArgs -join ' ')"

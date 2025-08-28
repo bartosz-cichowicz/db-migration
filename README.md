@@ -150,6 +150,83 @@ cp config.properties.example config.properties
 
 The script currently loads all configuration from `config.properties`. Future versions may support command-line overrides.
 
+## Storage SAS URL Generator
+
+The repository includes an additional `storage.ps1` script for generating SAS URLs and AzCopy commands for Azure Blob Storage operations.
+
+### Purpose
+- Creates Azure Storage container (if missing)
+- Generates time-limited SAS URL for specific blob upload
+- Provides ready-to-use AzCopy command for file transfers
+- Useful for securely sharing upload URLs with external systems
+
+### Configuration
+Add these parameters to your `config.properties`:
+
+```properties
+# Storage Script Configuration
+storageResourceGroupName=rg-storage
+storageLocation=northeurope
+storageSasAccountName=stdbexportfile
+storageSasContainerName=dbfiles
+storageSasBlobName=report.csv
+storageSasDays=30
+```
+
+### Configuration Parameters
+
+| Parameter | Description | Example |
+|-----------|-------------|---------|
+| `storageResourceGroupName` | Resource group for storage resources | `rg-storage` |
+| `storageLocation` | Azure region for new resources | `northeurope`, `eastus` |
+| `storageSasAccountName` | Storage account name | `mystorageaccount` |
+| `storageSasContainerName` | Container name | `uploads`, `dbfiles` |
+| `storageSasBlobName` | Target blob/file name | `report.csv`, `data.json` |
+| `storageSasDays` | SAS URL validity in days | `30`, `7`, `90` |
+
+### Usage
+
+```powershell
+# Simple execution - reads all config from config.properties
+.\storage.ps1
+```
+
+### Example Output
+
+```
+=== Storage SAS URL Generator ===
+Configuration loaded:
+  Subscription: c2fe7be1-7723-4646-84d6-9a33f7a4806c
+  Resource Group: rg-storage
+  Location: northeurope
+  Storage Account: stdbexportfile
+  Container: dbfiles
+  Blob Name: report.csv
+  SAS Days: 30
+
+[OK] SAS URL for blob:
+https://stdbexportfile.blob.core.windows.net/dbfiles/report.csv?sv=2021-06-08&se=2025-09-24T10%3A30%3A00Z&sr=b&sp=cw&sig=...
+
+[INFO] Example AzCopy command (upload):
+azcopy copy "C:\path\to\file" "https://stdbexportfile.blob.core.windows.net/dbfiles/report.csv?sv=2021-06-08&se=2025-09-24T10%3A30%3A00Z&sr=b&sp=cw&sig=..."
+```
+
+### Use Cases
+
+1. **File Upload Automation**: Generate upload URLs for automated systems
+2. **External Data Transfer**: Provide secure upload links to external partners
+3. **Temporary File Sharing**: Create time-limited access for file uploads
+4. **CI/CD Integration**: Generate upload URLs for build artifacts
+5. **Data Lake Ingestion**: Secure file uploads to data processing pipelines
+
+### Security Features
+
+- **Time-Limited Access**: SAS URLs expire after configured days
+- **Limited Permissions**: Only create and write permissions (no read/delete)
+- **HTTPS Only**: Enforces secure transfer protocol
+- **Specific Blob Access**: SAS URL works only for the specified file
+- **No Storage Key Exposure**: Uses SAS tokens instead of account keys
+
 ## Security Considerations
 
 ### 1. Protect Sensitive Information
