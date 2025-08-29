@@ -294,9 +294,6 @@ $exportArgs = @(
     "/TargetFile:$localBacpacPath"
     "/SourceEncryptConnection:True"
     "/SourceTrustServerCertificate:False"
-    # Skip/ignore orphaned users and related elements during export
-    "/p:IgnoreUserLoginMappings=True"
-    "/p:ExcludeObjectTypes=Users,RoleMembership,Permissions"
 )
 
 Write-Host "Export command: $SqlPackageExe $($exportArgs -join ' ')"
@@ -372,6 +369,32 @@ Write-Host "=== STEP 4: Importing BACPAC to Azure SQL Server using SqlPackage ==
 # Download BACPAC from storage for import
 $downloadBacpacPath = Join-Path $TempDir "download_$bacpacFileName"
 
+# Helper: get Azure SQL DB status (Online/Creating/Restoring/etc.)
+function Get-TargetDbStatus {
+    try {
+        $status = az sql db show --resource-group $resourceGroup --server $targetServerName --name $targetDbName --query "status" --output tsv 2>$null
+        return $status
+    } catch { return $null }
+}
+
+# Helper: ensure target DB is deleted before retrying import
+function Remove-TargetDbIfExists {
+    $status = Get-TargetDbStatus
+    if ($status) {
+        Write-Host "Target DB '$targetDbName' exists with status '$status'. Deleting before import/retry..." -ForegroundColor Yellow
+        az sql db delete --resource-group $resourceGroup --server $targetServerName --name $targetDbName --yes | Out-Null
+        # Wait until it's gone
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($sw.Elapsed.TotalMinutes -lt 20) {
+            Start-Sleep -Seconds 10
+            $check = Get-TargetDbStatus
+            if (-not $check) { break }
+            Write-Host "Waiting for DB deletion... current status: $check" -ForegroundColor Gray
+        }
+        $sw.Stop()
+    }
+}
+
 try {
     # Download BACPAC from storage
     az storage blob download `
@@ -388,7 +411,7 @@ try {
     Write-Host "BACPAC downloaded for import"
     
     # SqlPackage import arguments
-    $importArgs = @(
+    $importArgsBase = @(
         "/Action:Import"
         "/TargetServerName:$targetServerName.database.windows.net"
         "/TargetDatabaseName:$targetDbName"
@@ -397,33 +420,70 @@ try {
         "/SourceFile:$downloadBacpacPath"
         "/TargetEncryptConnection:True"
         "/TargetTrustServerCertificate:False"
+        "/p:CommandTimeout=1200"  # 20 minutes per command
     )
     
     # Add database size and service tier parameters if specified
     if ($config.ContainsKey('targetEdition') -and $config['targetEdition']) {
-        $importArgs += "/p:DatabaseEdition=$($config['targetEdition'])"
+        $importArgsBase += "/p:DatabaseEdition=$($config['targetEdition'])"
     }
     if ($config.ContainsKey('targetServiceObjective') -and $config['targetServiceObjective']) {
-        $importArgs += "/p:DatabaseServiceObjective=$($config['targetServiceObjective'])"
+        $importArgsBase += "/p:DatabaseServiceObjective=$($config['targetServiceObjective'])"
     }
     if ($config.ContainsKey('targetMaxSize') -and $config['targetMaxSize']) {
-        # SqlPackage expects size with proper unit specification
-        # For 250GB, we need to specify "250GB" not the MB equivalent
-        $maxSizeValue = "$($config['targetMaxSize'])"
-        $importArgs += "/p:DatabaseMaximumSize=$maxSizeValue"
+        # SqlPackage expects size with proper unit specification, e.g., 250GB
+        $maxSizeRaw = "$($config['targetMaxSize'])"
+        if ($maxSizeRaw -match '^[0-9]+$') { $maxSizeValue = "${maxSizeRaw}GB" } else { $maxSizeValue = $maxSizeRaw }
+        $importArgsBase += "/p:DatabaseMaximumSize=$maxSizeValue"
     }
-    
-    Write-Host "Import command: $SqlPackageExe $($importArgs -join ' ')"
-    
-    # Execute import
-    $importProcess = Start-Process -FilePath $SqlPackageExe -ArgumentList $importArgs -NoNewWindow -PassThru -Wait
-    
-    if ($importProcess.ExitCode -ne 0) {
-        throw "SqlPackage import failed with exit code: $($importProcess.ExitCode)"
+
+    # Retry loop for transient errors (e.g., 9001/3314/connection reset)
+    $maxAttempts = 3
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        if ($attempt -gt 1) {
+            Write-Host "Retrying import (attempt $attempt of $maxAttempts)..." -ForegroundColor Yellow
+        }
+
+        # Ensure no existing/partial DB blocks the import
+        Remove-TargetDbIfExists
+
+        $importArgs = $importArgsBase
+        Write-Host "Import command: $SqlPackageExe $($importArgs -join ' ')"
+
+        # Capture output for diagnostics
+        $stdOut = Join-Path $TempDir ("sqlpackage-import-out-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".log")
+        $stdErr = Join-Path $TempDir ("sqlpackage-import-err-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".log")
+
+        $proc = Start-Process -FilePath $SqlPackageExe -ArgumentList $importArgs -NoNewWindow -PassThru -Wait -RedirectStandardOutput $stdOut -RedirectStandardError $stdErr
+
+        if ($proc.ExitCode -eq 0) {
+            Write-Host "Database imported successfully to: $targetServerName/$targetDbName"
+            Write-StepComplete -stepName "STEP 4: Import to Azure SQL Database" -stepStartTime $step4StartTime
+            break
+        }
+
+        Write-Host "Import failed with exit code $($proc.ExitCode). Reviewing logs..." -ForegroundColor Yellow
+        $errText = ""
+        if (Test-Path $stdErr) { $errText = Get-Content $stdErr -Raw }
+        $outText = ""
+        if (Test-Path $stdOut) { $outText = Get-Content $stdOut -Raw }
+
+        $combined = ($errText + "`n" + $outText)
+        $isTransient = $false
+        if ($combined -match "transport-level error" -or $combined -match "forcibly closed by the remote host" -or $combined -match "Error code 9001" -or $combined -match "Error code 3314" -or $combined -match "not currently available") {
+            $isTransient = $true
+        }
+
+        if ($attempt -lt $maxAttempts -and $isTransient) {
+            Write-Host "Detected transient/availability errors. Waiting before retry..." -ForegroundColor Yellow
+            # Give the service time to recover; also ensure DB is deleted before next attempt
+            Remove-TargetDbIfExists
+            Start-Sleep -Seconds (60 * $attempt)  # backoff
+            continue
+        }
+
+        throw "SqlPackage import failed with exit code: $($proc.ExitCode). See logs: $stdOut / $stdErr"
     }
-    
-    Write-Host "Database imported successfully to: $targetServerName/$targetDbName"
-    Write-StepComplete -stepName "STEP 4: Import to Azure SQL Database" -stepStartTime $step4StartTime
     
 } catch {
     Write-Error "Import failed: $($_.Exception.Message)"
