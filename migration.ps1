@@ -284,6 +284,21 @@ Write-Host "=== STEP 2: Exporting database from Managed Instance using SqlPackag
 # Local BACPAC path
 $localBacpacPath = Join-Path $TempDir $bacpacFileName
 
+# Ensure temp database exists (create if missing) to satisfy export precondition
+try {
+    $ensureDbQuery = @"
+IF DB_ID('$tempDbName') IS NULL
+BEGIN
+    PRINT 'Creating database [$tempDbName] as it does not exist.';
+    CREATE DATABASE [$tempDbName];
+END
+"@
+    Write-Host "Ensuring database '$tempDbName' exists on Managed Instance..." -ForegroundColor Cyan
+    Invoke-Sqlcmd -ServerInstance $miServerInstance -Database "master" -Username $miAdmin -Password $miPassword -Query $ensureDbQuery -ConnectionTimeout $config['connectionTimeout'] -QueryTimeout $config['queryTimeoutShort']
+} catch {
+    Write-Host "Warning: Unable to ensure database existence: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
 # SqlPackage export arguments
 $exportArgs = @(
     "/Action:Export"
@@ -431,14 +446,13 @@ try {
         $importArgsBase += "/p:DatabaseServiceObjective=$($config['targetServiceObjective'])"
     }
     if ($config.ContainsKey('targetMaxSize') -and $config['targetMaxSize']) {
-        # SqlPackage expects size with proper unit specification, e.g., 250GB
-        $maxSizeRaw = "$($config['targetMaxSize'])"
-        if ($maxSizeRaw -match '^[0-9]+$') { $maxSizeValue = "${maxSizeRaw}GB" } else { $maxSizeValue = $maxSizeRaw }
+        # Pass through value as provided in config (e.g., 250) to avoid invalid argument errors
+        $maxSizeValue = "$($config['targetMaxSize'])"
         $importArgsBase += "/p:DatabaseMaximumSize=$maxSizeValue"
     }
 
-    # Retry loop for transient errors (e.g., 9001/3314/connection reset)
-    $maxAttempts = 3
+    # Retry loop for transient errors (e.g., 9001/3314/connection reset/deadlock 1205)
+    $maxAttempts = 5
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         if ($attempt -gt 1) {
             Write-Host "Retrying import (attempt $attempt of $maxAttempts)..." -ForegroundColor Yellow
@@ -446,6 +460,8 @@ try {
 
         # Ensure no existing/partial DB blocks the import
         Remove-TargetDbIfExists
+        # Give a short buffer after deletion
+        Start-Sleep -Seconds 10
 
         $importArgs = $importArgsBase
         Write-Host "Import command: $SqlPackageExe $($importArgs -join ' ')"
@@ -470,7 +486,7 @@ try {
 
         $combined = ($errText + "`n" + $outText)
         $isTransient = $false
-        if ($combined -match "transport-level error" -or $combined -match "forcibly closed by the remote host" -or $combined -match "Error code 9001" -or $combined -match "Error code 3314" -or $combined -match "not currently available") {
+        if ($combined -match "transport-level error" -or $combined -match "forcibly closed by the remote host" -or $combined -match "Error code 9001" -or $combined -match "Error code 3314" -or $combined -match "not currently available" -or $combined -match "deadlocked on lock resources" -or $combined -match "deadlock victim" -or $combined -match "Msg\s*1205") {
             $isTransient = $true
         }
 
